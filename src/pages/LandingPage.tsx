@@ -8,7 +8,6 @@ import React from "react";
 import CoffeeChallengesSection from "@/components/Challenge";
 import Map from "@/components/Map";
 
-
 const LandingPage: React.FC = () => {
     return (
         <div className="overflow-hidden">
