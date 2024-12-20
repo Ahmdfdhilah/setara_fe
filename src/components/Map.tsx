@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   MapContainer,
   TileLayer,
@@ -6,15 +6,25 @@ import {
   Marker,
   Popup,
   FeatureGroup,
-  useMap
+  useMap,
+  Polyline
 } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import { LatLngBounds, LatLng, divIcon } from 'leaflet';
 import axios from 'axios';
-import { area, centerOfMass } from '@turf/turf';
-import { Feature, FeatureCollection } from 'geojson';
+import { area, centerOfMass, distance, bearing } from '@turf/turf';
+import { Feature, FeatureCollection, Point } from 'geojson';
+import { Button } from './ui/button';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from './ui/select';
+import RouteModal from './RouteModal';
 
-// Custom hook for calculating bounds
+
 const useDynamicBounds = () => {
   const [bounds, setBounds] = useState<LatLngBounds | null>(null);
 
@@ -66,14 +76,94 @@ interface LahanData {
   koordinat: number[][];
   luas?: number;
 }
-
 interface GudangData {
   id: string;
   nama: string;
   lokasi: number[];
 }
+interface RouteInstruction {
+  text: string;
+  distance: number;
+  duration: number;
+}
 
-// Custom component to handle zooming to feature
+interface RouteData {
+  coordinates: number[][];
+  distance: number;
+  duration: number;
+  instructions: RouteInstruction[];
+}
+interface FilterState {
+  search: string;
+  category: string;
+  area: string; // 'small' | 'medium' | 'large'
+}
+
+const CurrentLocationMarker = ({ onLocationUpdate }: { onLocationUpdate: (location: [number, number]) => void }) => {
+  const [position, setPosition] = useState<[number, number] | null>(null);
+  const map = useMap();
+
+  useEffect(() => {
+    map.locate({ watch: true, enableHighAccuracy: true });
+
+    map.on('locationfound', (e) => {
+      const newPosition: [number, number] = [e.latlng.lat, e.latlng.lng];
+      setPosition(newPosition);
+      onLocationUpdate(newPosition);
+    });
+
+    map.on('locationerror', (e) => {
+      console.error('Location access denied:', e);
+    });
+
+    return () => {
+      map.stopLocate();
+    };
+  }, [map, onLocationUpdate]);
+
+  return position ? (
+    <Marker position={position}>
+      <Popup>Lokasi Anda Saat Ini</Popup>
+    </Marker>
+  ) : null;
+};
+
+// Calculate distance and bearing between two points
+const calculateDistanceAndBearing = (from: [number, number], to: [number, number]) => {
+  const fromPoint: Feature<Point> = {
+    type: 'Feature',
+    properties: {},
+    geometry: {
+      type: 'Point',
+      coordinates: [from[1], from[0]]
+    }
+  };
+
+  const toPoint: Feature<Point> = {
+    type: 'Feature',
+    properties: {},
+    geometry: {
+      type: 'Point',
+      coordinates: [to[1], to[0]]
+    }
+  };
+
+  const distanceInKm = distance(fromPoint, toPoint);
+  const bearingDegrees = bearing(fromPoint, toPoint);
+
+  // Convert bearing to cardinal direction
+  const getCardinalDirection = (bearing: number) => {
+    const directions = ['Utara', 'Timur Laut', 'Timur', 'Tenggara', 'Selatan', 'Barat Daya', 'Barat', 'Barat Laut'];
+    const index = Math.round(((bearing + 360) % 360) / 45) % 8;
+    return directions[index];
+  };
+
+  return {
+    distance: Math.round(distanceInKm * 100) / 100,
+    direction: getCardinalDirection(bearingDegrees)
+  };
+};
+
 const ZoomToFeature = ({ feature }: { feature: Feature }) => {
   const map = useMap();
 
@@ -118,65 +208,128 @@ const createLabelPosition = (feature: Feature): [number, number] => {
 const Map = () => {
   const [lahanData, setLahanData] = useState<FeatureCollection | null>(null);
   const [gudangData, setGudangData] = useState<GudangData[]>([]);
+  const [currentLocation, setCurrentLocation] = useState<[number, number] | null>(null);
+  const [selectedGudang, setSelectedGudang] = useState<GudangData | null>(null);
+  const [route, setRoute] = useState<RouteData | null>(null);
   const { bounds, calculateOptimizedBounds, setBounds } = useDynamicBounds();
-  const [selectedFeature, setSelectedFeature] = useState<Feature | null>(null);
+  const [isRouteModalOpen, setIsRouteModalOpen] = useState(false);
+  const [filters, setFilters] = useState<FilterState>({
+    search: '',
+    category: 'all',
+    area: 'all',
+  });
 
-  // New function to estimate yield based on area and soil type
-  const calculateEstimatedYield = (lahan: LahanData) => {
-    const baseYieldPerHectare = 5; 
-    const area = parseFloat(calculateArea(lahan.koordinat));
+  const filterBySearch = useCallback((feature: Feature) => {
+    if (!filters.search) return true;
+    const searchLower = filters.search.toLowerCase();
+    const name = ((feature.properties as any)?.name || '').toLowerCase();
+    return name.includes(searchLower);
+  }, [filters.search]);
 
-    // Adjust yield based on different factors
-    const soilMultiplier = determineSoilYieldMultiplier(lahan.koordinat);
+  // Rest of the filtering functions remain the same
+  const filterByCategory = useCallback((feature: Feature) => {
+    if (filters.category === 'all') return true;
+    return (feature.properties as any)?.category === filters.category;
+  }, [filters.category]);
 
-    return (area * baseYieldPerHectare * soilMultiplier).toFixed(2);
-  };
+  const filterByArea = useCallback((feature: Feature) => {
+    if (filters.area === 'all') return true;
+    const areaSize = parseFloat((feature.properties as any)?.luas || 0);
 
-  // Determine soil type based on geographical characteristics
-  const determineSoilType = (coordinates: number[][]) => {
-    // This is a simplified mock implementation
-    // In a real-world scenario, you'd use more sophisticated geospatial analysis
-    const centerCoord = coordinates[0];
-    const longitude = centerCoord[0];
-    const latitude = centerCoord[1];
+    switch (filters.area) {
+      case 'small': return areaSize < 10;
+      case 'medium': return areaSize >= 10 && areaSize < 20;
+      case 'large': return areaSize >= 20;
+      default: return true;
+    }
+  }, [filters.area]);
 
-    if (latitude < -5.4 && longitude > 105.4) return 'Aluvial';
-    if (latitude < -5.3 && longitude < 105.3) return 'Volcanik';
-    return 'Sedimen';
-  };
+  const filteredLahanData = useMemo(() => {
+    if (!lahanData) return null;
 
-  // Soil yield multiplier based on soil type
-  const determineSoilYieldMultiplier = (coordinates: number[][]) => {
-    const soilType = determineSoilType(coordinates);
+    const filteredFeatures = lahanData.features.filter(feature =>
+      filterBySearch(feature) &&
+      filterByCategory(feature) &&
+      filterByArea(feature)
+    );
 
-    switch (soilType) {
-      case 'Volcanik': return 1.2; // Higher yield
-      case 'Aluvial': return 1.0; // Average yield
-      case 'Sedimen': return 0.8; // Lower yield
-      default: return 1.0;
+    return {
+      type: 'FeatureCollection' as const,
+      features: filteredFeatures
+    };
+  }, [lahanData, filterBySearch, filterByCategory, filterByArea]);
+
+  const fetchRoute = async (start: [number, number], end: [number, number]) => {
+    try {
+      const response = await axios.get(
+        `https://router.project-osrm.org/route/v1/driving/${start[1]},${start[0]};${end[1]},${end[0]}?overview=full&geometries=geojson&steps=true&annotations=true`
+      );
+
+      if (response.data.routes && response.data.routes[0]) {
+        const route = response.data.routes[0];
+        const instructions = route.legs[0].steps.map((step: { maneuver: { type: string; modifier: string | undefined; }; name: string; distance: number; duration: number; }) => ({
+          text: step.maneuver.type === 'arrive' ? 'Anda telah sampai di tujuan' :
+            formatInstruction(step.maneuver.type, step.maneuver.modifier, step.name),
+          distance: step.distance / 1000, // Convert to km
+          duration: step.duration / 60 // Convert to minutes
+        }));
+
+        setRoute({
+          coordinates: route.geometry.coordinates,
+          distance: route.distance / 1000,
+          duration: route.duration / 60,
+          instructions: instructions
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching route:', error);
     }
   };
 
-  // Dynamic styling based on estimated yield
-  const getDynamicLahanStyle = (feature?: Feature) => {
-    if (!feature) return lahanStyle;
+  const formatInstruction = (type: string, modifier: string | undefined, streetName: string): string => {
+    const name = streetName ? ` ke ${streetName}` : '';
 
-    const estimatedYield = parseFloat((feature.properties as any)?.estimatedYield || 0);
-
-    const getColorBasedOnYield = () => {
-      if (estimatedYield < 10) return 'red';
-      if (estimatedYield < 20) return 'orange';
-      if (estimatedYield < 30) return 'yellow';
-      return 'green';
-    };
-
-    return {
-      ...lahanStyle,
-      fillColor: getColorBasedOnYield(),
-      color: getColorBasedOnYield(),
-      fillOpacity: 0.7
-    };
+    switch (type) {
+      case 'turn':
+        switch (modifier) {
+          case 'left': return `Belok kiri${name}`;
+          case 'right': return `Belok kanan${name}`;
+          case 'slight left': return `Belok sedikit ke kiri${name}`;
+          case 'slight right': return `Belok sedikit ke kanan${name}`;
+          case 'sharp left': return `Belok tajam ke kiri${name}`;
+          case 'sharp right': return `Belok tajam ke kanan${name}`;
+          default: return `Belok${name}`;
+        }
+      case 'new name': return `Lanjutkan${name}`;
+      case 'depart': return `Mulai perjalanan${name}`;
+      case 'arrive': return 'Anda telah sampai di tujuan';
+      case 'roundabout': return `Masuk bundaran${name}`;
+      case 'merge': return `Bergabung${name}`;
+      case 'continue': return `Terus${name}`;
+      default: return `Lanjutkan perjalanan${name}`;
+    }
   };
+
+  const handleGudangClick = (gudang: GudangData) => {
+    setSelectedGudang(gudang);
+    if (currentLocation) {
+      fetchRoute(currentLocation, [gudang.lokasi[1], gudang.lokasi[0]]);
+      setIsRouteModalOpen(true);
+    }
+  };
+
+  // Get distance and direction info for selected warehouse
+  const getWarehouseInfo = () => {
+    if (!currentLocation || !selectedGudang) return null;
+
+    const { distance, direction } = calculateDistanceAndBearing(
+      currentLocation,
+      [selectedGudang.lokasi[1], selectedGudang.lokasi[0]]
+    );
+
+    return { distance, direction };
+  };
+
 
   useEffect(() => {
     const fetchData = async () => {
@@ -194,8 +347,6 @@ const Map = () => {
               name: lahan.nama,
               id: lahan.id,
               luas: calculateArea(lahan.koordinat),
-              estimatedYield: calculateEstimatedYield(lahan),
-              soilType: determineSoilType(lahan.koordinat),
             },
             geometry: {
               type: 'Polygon',
@@ -256,16 +407,48 @@ const Map = () => {
     fillOpacity: 0.5,
   };
 
+  const highlightSearchText = (text: string) => {
+    if (!filters.search) return text;
+
+    const searchRegex = new RegExp(`(${filters.search})`, 'gi');
+    return text.replace(searchRegex, '<mark style="background-color: #FFEB3B; padding: 0 2px; border-radius: 2px">$1</mark>');
+  };
+
   const getPopupContent = (feature: Feature) => {
-    const { name, luas, estimatedYield, soilType } = feature.properties as any;
+    const { name, luas } = feature.properties as any;
     return `
       <div class="p-2">
-        <h3 class="font-bold text-lg mb-2">${name}</h3>
+        <h3 class="font-bold text-lg mb-2">${highlightSearchText(name)}</h3>
         <p><strong>Luas:</strong> ${luas} hektar</p>
-        <p><strong>Perkiraan Hasil Panen:</strong> ${estimatedYield} ton</p>
-        <p><strong>Jenis Tanah:</strong> ${soilType}</p>
       </div>
     `;
+  };
+
+  const FilterControls = () => {
+
+    const handleAreaChange = useCallback((value: string) => {
+      setFilters(prev => ({ ...prev, area: value }));
+    }, []);
+
+    return (
+      <div className="absolute top-4 right-4 z-[1000] bg-white  rounded-lg shadow-lg space-y-4 max-w-xs">
+
+        <Select
+          value={filters.area}
+          onValueChange={handleAreaChange}
+        >
+          <SelectTrigger>
+            <SelectValue placeholder="Pilih ukuran lahan" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Semua Ukuran</SelectItem>
+            <SelectItem value="small">Kecil (&lt; 10 ha)</SelectItem>
+            <SelectItem value="medium">Sedang (10-20 ha)</SelectItem>
+            <SelectItem value="large">Besar (&gt; 20 ha)</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+    );
   };
 
   return (
@@ -275,12 +458,14 @@ const Map = () => {
           <div className="flex items-center justify-center mb-6">
             <h2 className="text-4xl font-bold text-gray-900">Persebaran Kami</h2>
           </div>
-          <p className="text-lg text-gray-700 flex items-center justify-center">
+          <p className="text-lg text-gray-700">
             Persebaran lahan, mitra, dan gudang Setara Commodity
           </p>
         </div>
-        <div className="w-[90vw] h-[70vh] shadow-2xl rounded-lg border border-gray-200 overflow-hidden">
+
+        <div className="w-[90vw] h-[70vh] shadow-2xl rounded-lg border border-gray-200 overflow-hidden relative z-[1]">
           <div className="h-full">
+            <FilterControls />
             <MapContainer
               center={[-5.35, 105.5]}
               zoom={10}
@@ -291,75 +476,85 @@ const Map = () => {
             >
               <TileLayer
                 url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-                attribution='&copy; <a href="https://www.esri.com/">Esri</a>, Earthstar Geographics'
+                attribution='&copy; <a href="https://www.esri.com/">Esri</a>'
               />
 
-              {lahanData && (
+              <CurrentLocationMarker onLocationUpdate={setCurrentLocation} />
+
+              {filteredLahanData && (
                 <FeatureGroup>
                   <GeoJSON
-                    data={lahanData}
-                    style={(feature) => getDynamicLahanStyle(feature)}
+                    data={filteredLahanData}
+                    style={lahanStyle}
                     onEachFeature={(feature, layer) => {
                       layer.bindPopup(getPopupContent(feature));
-
-                      layer.on({
-                        click: () => {
-                          setSelectedFeature(feature);
-                        }
-                      });
                     }}
                   />
 
-                  {lahanData.features.map((feature: Feature, index: number) => (
+                  {filteredLahanData.features.map((feature, index) => (
                     <ZoomToFeature key={`label-${index}`} feature={feature} />
                   ))}
                 </FeatureGroup>
               )}
 
-              {gudangData.map((gudang: GudangData) => (
+              {lahanData && (
+                <FeatureGroup>
+                  <GeoJSON
+                    data={lahanData}
+                    style={lahanStyle}
+                    onEachFeature={(feature, layer) => {
+                      layer.bindPopup(getPopupContent(feature));
+                    }}
+                  />
+
+                  {lahanData.features.map((feature, index) => (
+                    <ZoomToFeature key={`label-${index}`} feature={feature} />
+                  ))}
+                </FeatureGroup>
+              )}
+
+              {gudangData.map((gudang) => (
                 <Marker
                   key={gudang.id}
-                  position={[gudang.lokasi[1], gudang.lokasi[0]] as [number, number]}
+                  position={[gudang.lokasi[1], gudang.lokasi[0]]}
+                  eventHandlers={{
+                    click: () => handleGudangClick(gudang)
+                  }}
                 >
                   <Popup>
-                    <strong>{gudang.nama}</strong>
+                    <div className="p-2">
+                      <h3 className="font-bold">{gudang.nama}</h3>
+                      {currentLocation && (
+                        <Button
+                          className="mt-2"
+                          onClick={() => handleGudangClick(gudang)}
+                        >
+                          Lihat Rute
+                        </Button>
+                      )}
+                    </div>
                   </Popup>
                 </Marker>
               ))}
+
+              {route && (
+                <Polyline
+                  positions={route.coordinates.map(coord => [coord[1], coord[0]])}
+                  color="blue"
+                  weight={3}
+                />
+              )}
             </MapContainer>
           </div>
         </div>
-
-        {/* Panel Detail Tambahan: Lahan yang Dipilih */}
-        {selectedFeature && (
-          <div className="mt-6 p-6 bg-white shadow-lg rounded-lg border border-gray-200">
-            <h3 className="text-3xl font-extrabold text-emerald-700/70 mb-4">
-              📍 Detail {(selectedFeature.properties as any).name}
-            </h3>
-            <div className="flex flex-col gap-6">
-              <div className="space-y-3">
-                <p className="text-lg">
-                  <span className="font-semibold text-gray-700">📏 Luas:</span> {(selectedFeature.properties as any).luas} hektar
-                </p>
-                <p className="text-lg">
-                  <span className="font-semibold text-gray-700">🌱 Jenis Tanah:</span> {(selectedFeature.properties as any).soilType}
-                </p>
-              </div>
-              <div className="space-y-3">
-                <p className="text-lg">
-                  <span className="font-semibold text-gray-700">🌾 Perkiraan Hasil:</span> {(selectedFeature.properties as any).estimatedYield} ton
-                </p>
-              </div>
-            </div>
-            <div className="mt-4 p-4 bg-blue-50 border-t border-blue-300">
-              <p className="text-sm text-gray-600 italic">
-                Catatan: Perkiraan hasil panen bergantung pada kondisi cuaca dan faktor lingkungan lainnya.
-              </p>
-            </div>
-          </div>
-        )}
-
       </div>
+      <RouteModal
+        isOpen={isRouteModalOpen}
+        onClose={() => setIsRouteModalOpen(false)}
+        route={route}
+        selectedGudang={selectedGudang}
+        warehouseInfo={getWarehouseInfo()}
+      />
     </section>
   );
 };
