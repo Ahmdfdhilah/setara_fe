@@ -7,8 +7,9 @@ import {
   Popup,
   FeatureGroup,
   useMap,
-  Polyline
+  Polyline,
 } from 'react-leaflet';
+import { Icon } from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { LatLngBounds, LatLng, divIcon } from 'leaflet';
 import axios from 'axios';
@@ -70,6 +71,12 @@ const useDynamicBounds = () => {
 };
 
 // Define types for our data
+interface MitraData {
+  id: number;
+  nama: string;
+  lokasi: number[];
+}
+
 interface LahanData {
   nama: string;
   id: string;
@@ -208,6 +215,7 @@ const createLabelPosition = (feature: Feature): [number, number] => {
 const Map = () => {
   const [lahanData, setLahanData] = useState<FeatureCollection | null>(null);
   const [gudangData, setGudangData] = useState<GudangData[]>([]);
+  const [mitraData, setMitraData] = useState<MitraData[]>([]);
   const [currentLocation, setCurrentLocation] = useState<[number, number] | null>(null);
   const [selectedGudang, setSelectedGudang] = useState<GudangData | null>(null);
   const [route, setRoute] = useState<RouteData | null>(null);
@@ -218,6 +226,18 @@ const Map = () => {
     category: 'all',
     area: 'all',
   });
+
+  const mitraIcon = new Icon({
+    iconUrl: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32">
+        <circle cx="12" cy="8" r="4" fill="#fff" />
+      </svg>
+    `),
+    iconSize: [24, 24], // Ukuran ikon
+    iconAnchor: [12, 24], // Titik anchor ikon (biasanya di tengah bawah)
+    popupAnchor: [0, -24], // Titik anchor untuk popup
+  });
+
 
   const filterBySearch = useCallback((feature: Feature) => {
     if (!filters.search) return true;
@@ -334,9 +354,10 @@ const Map = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [lahanResponse, gudangResponse] = await Promise.all([
+        const [lahanResponse, gudangResponse, mitraResponse] = await Promise.all([
           axios.get<LahanData[]>('http://localhost:8000/api/lahan'),
           axios.get<GudangData[]>('http://localhost:8000/api/gudang'),
+          axios.get<MitraData[]>('http://localhost:8000/api/mitra'),
         ]);
 
         const processedLahanData: FeatureCollection = {
@@ -370,6 +391,7 @@ const Map = () => {
 
         setLahanData(processedLahanData);
         setGudangData(gudangResponse.data);
+        setMitraData(mitraResponse.data);
         setBounds(calculatedBounds);
       } catch (error) {
         console.error('Error fetching data:', error);
@@ -532,6 +554,21 @@ const Map = () => {
                           Lihat Rute
                         </Button>
                       )}
+                    </div>
+                  </Popup>
+                </Marker>
+              ))}4
+
+              {mitraData.map((mitra) => (
+                <Marker
+                  key={`mitra-${mitra.id}`}
+                  position={[mitra.lokasi[1], mitra.lokasi[0]]}
+                  icon={mitraIcon}
+                >
+                  <Popup>
+                    <div className="p-2">
+                      <h3 className="font-bold">{mitra.nama}</h3>
+                      <p className="text-sm text-gray-600">Mitra Setara</p>
                     </div>
                   </Popup>
                 </Marker>

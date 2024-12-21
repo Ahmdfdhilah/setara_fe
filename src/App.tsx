@@ -1,15 +1,25 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import LandingPage from "./pages/LandingPage";
 import ManageMap from "./pages/admin/ManageMap";
+import LoginPage from "./pages/Login";
+import { AuthProvider } from "./context/AuthContext";
+import { PrivateRoute } from "./route/PrivateRoute";
 
 function App() {
   return (
-    <BrowserRouter>
+    <AuthProvider>
+      <BrowserRouter>
         <Routes>
+          <Route path="/login" element={<LoginPage />} />
           <Route path="/" element={<LandingPage />} />
-          <Route path="/admin/create/lahan" element={<ManageMap />} />
+          <Route path="/admin/manage/map" element={
+            <PrivateRoute>
+              <ManageMap />
+            </PrivateRoute>
+          } />
         </Routes>
-    </BrowserRouter>
+      </BrowserRouter>
+    </AuthProvider>
   );
 }
 

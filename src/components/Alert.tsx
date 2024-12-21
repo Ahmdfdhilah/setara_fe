@@ -89,36 +89,35 @@ export const Notification: React.FC<NotificationProps> = ({
 };
 
 export const Confirmation: React.FC<ConfirmationProps> = ({
-    show,
-    title,
-    message,
-    onConfirm,
-    onCancel,
-  }) => {
-    return (
-      <Dialog open={show} onOpenChange={() => onCancel()}>
-        <DialogPortal>
-          <div className="fixed inset-0 z-[2000]">
-            <div className="fixed inset-0 bg-black/50" />
-            <DialogContent className="fixed top-[50%] left-[50%] translate-x-[-50%] translate-y-[-50%] z-[2001]">
-              <DialogHeader>
-                <DialogTitle>{title}</DialogTitle>
-                <DialogDescription>{message}</DialogDescription>
-              </DialogHeader>
-              <DialogFooter>
-                <div className="flex justify-end gap-2">
-                  <Button variant="outline" onClick={onCancel}>
-                    Batal
-                  </Button>
-                  <Button variant="destructive" onClick={onConfirm}>
-                    Hapus
-                  </Button>
-                </div>
-              </DialogFooter>
-            </DialogContent>
-          </div>
-        </DialogPortal>
-      </Dialog>
-    );
-  };
-  
+  show,
+  title,
+  message,
+  onConfirm,
+  onCancel,
+}) => {
+  return (
+    <Dialog open={show} onOpenChange={() => onCancel()}>
+      <DialogPortal>
+        <div className="fixed inset-0 z-[2000]">
+          <div className="fixed inset-0 bg-black/50" />
+          <DialogContent className="fixed top-[50%] left-[50%] translate-x-[-50%] translate-y-[-50%] z-[2001]">
+            <DialogHeader>
+              <DialogTitle>{title}</DialogTitle>
+              <DialogDescription>{message}</DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={onCancel}>
+                  Batal
+                </Button>
+                <Button variant="destructive" onClick={onConfirm}>
+                  Hapus
+                </Button>
+              </div>
+            </DialogFooter>
+          </DialogContent>
+        </div>
+      </DialogPortal>
+    </Dialog>
+  );
+};
